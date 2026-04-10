@@ -356,6 +356,18 @@ extern "C"
 	FREERDP_API LONG WINAPI Emulate_SCardAudit(SmartcardEmulationContext* smartcard,
 	                                           SCARDCONTEXT hContext, DWORD dwEvent);
 
+	/**
+	 * Register a callback that is fired exactly once on the first SCardTransmit call.
+	 * This allows the client (e.g. freerdp_wrapper.c) to emit the TDP RDPAuthStarted
+	 * message at the correct moment, matching the timing used by the rdp-rs path.
+	 *
+	 * @param cb       Function to call.  May be NULL to deregister.
+	 * @param userdata Opaque pointer forwarded to @p cb.
+	 */
+	typedef void (*SmartcardFirstTransmitCallback)(void* userdata);
+	FREERDP_API void Emulate_SetFirstTransmitCallback(SmartcardFirstTransmitCallback cb,
+	                                                  void* userdata);
+
 #ifdef __cplusplus
 }
 #endif

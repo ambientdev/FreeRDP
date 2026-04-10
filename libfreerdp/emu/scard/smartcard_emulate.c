@@ -33,16 +33,22 @@
 #include <freerdp/emulate/scard/smartcard_emulate.h>
 #include "FreeRDP.ico.h"
 
-#include "smartcard_virtual_gids.h"
+#include "smartcard_virtual_piv.h"
 
 #define MAX_CACHE_ITEM_SIZE 4096
 #define MAX_CACHE_ITEM_VALUES 4096
 
-static CHAR g_ReaderNameA[] = { 'F', 'r', 'e', 'e', 'R', 'D', 'P', ' ',  'E',
-	                            'm', 'u', 'l', 'a', 't', 'o', 'r', '\0', '\0' };
+/* Reader name must contain "Teleport" so the ambient-dll credential provider
+ * (CAmbientProvider.cpp) recognises and selects this virtual reader. */
+static CHAR g_ReaderNameA[] = { 'T', 'e', 'l', 'e', 'p', 'o', 'r', 't', '\0', '\0' };
 static INIT_ONCE g_ReaderNameWGuard = INIT_ONCE_STATIC_INIT;
 static WCHAR g_ReaderNameW[32] = { 0 };
 static size_t g_ReaderNameWLen = 0;
+
+/* First-transmit callback (process-global; one connection at a time per process) */
+static SmartcardFirstTransmitCallback g_first_transmit_cb       = NULL;
+static void*                          g_first_transmit_userdata = NULL;
+static BOOL                           g_first_transmit_fired    = FALSE;
 
 static char* card_id_and_name_a(const UUID* CardIdentifier, LPCSTR LookupName)
 {
@@ -123,7 +129,7 @@ typedef struct
 	DWORD dwActiveProtocol;
 	SCARDCONTEXT hContext;
 	SCARDHANDLE card;
-	vgidsContext* vgids;
+	pivContext* piv;
 	size_t referencecount;
 } SCardHandle;
 
@@ -248,7 +254,7 @@ static void scard_handle_free(void* handle)
 	if (hdl)
 	{
 		free(hdl->szReader.pv);
-		vgids_free(hdl->vgids);
+		piv_free(hdl->piv);
 	}
 	free(hdl);
 }
@@ -289,8 +295,8 @@ static SCardHandle* scard_handle_new(SmartcardEmulationContext* smartcard, SCARD
 	if (!hdl->szReader.pv)
 		goto fail;
 
-	hdl->vgids = vgids_new();
-	if (!hdl->vgids)
+	hdl->piv = piv_new();
+	if (!hdl->piv)
 		goto fail;
 
 	{
@@ -301,7 +307,7 @@ static SCardHandle* scard_handle_new(SmartcardEmulationContext* smartcard, SCARD
 
 		const char* pin = freerdp_settings_get_string(smartcard->settings, FreeRDP_Password);
 
-		if (!vgids_init(hdl->vgids, pem, key, pin))
+		if (!piv_init(hdl->piv, pem, key, pin))
 			goto fail;
 	}
 
@@ -1566,7 +1572,8 @@ SCardHandle* find_reader(SmartcardEmulationContext* smartcard, const void* szRea
 	for (size_t x = 0; x < count; x++)
 	{
 		SCardHandle* cur = HashTable_GetItemValue(smartcard->handles, (const void*)keys[x]);
-		WINPR_ASSERT(cur);
+		if (!cur)
+			continue;
 
 		if (cur->unicode != unicode)
 			continue;
@@ -1988,7 +1995,15 @@ LONG WINAPI Emulate_SCardTransmit(SmartcardEmulationContext* smartcard, SCARDHAN
 
 		hdl->transmitcount++;
 
-		if (!vgids_process_apdu(hdl->vgids, pbSendBuffer, cbSendLength, &response, &responseSize))
+		/* Fire the first-transmit callback exactly once (notifies the Go layer
+		 * that PIV authentication exchange has begun, matching rdp-rs timing). */
+		if (!g_first_transmit_fired && g_first_transmit_cb)
+		{
+			g_first_transmit_fired = TRUE;
+			g_first_transmit_cb(g_first_transmit_userdata);
+		}
+
+		if (!piv_process_apdu(hdl->piv, pbSendBuffer, cbSendLength, &response, &responseSize))
 			status = SCARD_E_NO_SMARTCARD;
 		else
 		{
@@ -2751,10 +2766,17 @@ void Emulate_Free(SmartcardEmulationContext* context)
 	free(context);
 }
 
+void Emulate_SetFirstTransmitCallback(SmartcardFirstTransmitCallback cb, void* userdata)
+{
+	g_first_transmit_cb       = cb;
+	g_first_transmit_userdata = userdata;
+	g_first_transmit_fired    = FALSE;
+}
+
 BOOL Emulate_IsConfigured(SmartcardEmulationContext* context)
 {
 	BOOL rc = FALSE;
-	vgidsContext* vgids = NULL;
+	pivContext* piv = NULL;
 	const char* pem = NULL;
 	const char* key = NULL;
 	const char* pin = NULL;
@@ -2773,10 +2795,10 @@ BOOL Emulate_IsConfigured(SmartcardEmulationContext* context)
 	context->key = key;
 	context->pin = pin;
 
-	vgids = vgids_new();
-	if (vgids)
-		rc = vgids_init(vgids, context->pem, context->key, context->pin);
-	vgids_free(vgids);
+	piv = piv_new();
+	if (piv)
+		rc = piv_init(piv, context->pem, context->key, context->pin);
+	piv_free(piv);
 
 	context->configured = rc;
 	return rc;

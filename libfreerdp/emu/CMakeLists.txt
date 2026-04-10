@@ -5,8 +5,8 @@ if(WITH_SMARTCARD_EMULATE)
     scard/smartcard_emulate.c
     scard/FreeRDP.ico.h
     scard/FreeRDP.ico.c
-    scard/smartcard_virtual_gids.h
-    scard/smartcard_virtual_gids.c
+    scard/smartcard_virtual_piv.h
+    scard/smartcard_virtual_piv.c
   )
   freerdp_module_add(${EMULATE_SRCS})
   freerdp_library_add(ZLIB::ZLIB)

@@ -244,7 +244,21 @@ static UINT rdpgfx_decode_AVC444(RDPGFX_PLUGIN* gfx, RDPGFX_SURFACE_COMMAND* cmd
 		h264.bitstream[0].length = (UINT32)len;
 	}
 
-	cmd->extra = (void*)&h264;
+	/*
+	 * Convert AVC444 → AVC420 for passthrough: only forward the base LUMA
+	 * layer (bitstream[0]) when LC=0 or LC=1.  When LC=2 the only stream
+	 * present is the chroma-enhancement layer — feeding it to a decoder
+	 * that expects base-layer NALUs corrupts its reference-frame state,
+	 * so we drop those frames entirely.
+	 */
+	if (h264.LC == 2)
+	{
+		error = CHANNEL_RC_OK;
+		goto fail;
+	}
+
+	cmd->extra = (void*)&h264.bitstream[0];
+	cmd->codecId = RDPGFX_CODECID_AVC420;
 
 	if (context)
 	{
